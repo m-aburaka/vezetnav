@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<list>
+    <location name="first" type ="1" desc="desc" subdesc="subdescripion1" long="30.0" lat="60.351363"></location>
+    <location name="first2" type="1" desc="desc" subdesc="subdescription2" long="15.0" lat="60.351363"></location>
+</list>
