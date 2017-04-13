@@ -10,6 +10,7 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Debug;
 import android.os.Environment;
 import android.os.Handler;
 import android.support.v4.content.ContextCompat;
@@ -86,7 +87,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
         map.setMapListener(this);
         map.setOnDragListener(this);
-
+        map.setOnTouchListener(this);
 
         Handler handler = new Handler();
         socketThread = new UpdateMapOverlayThread(handler);
@@ -312,8 +313,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         long timeout = currentTime - mTrackingModeTimeOut;
         if (!mTrackingMode && timeout > 10000) {
             mTrackingMode = true;
-            TextView speedTxt = (TextView) findViewById(R.id.state);
-            speedTxt.setText("tracking:" + mTrackingMode);
+            Log.d("trackingMode", "tracking:" + mTrackingMode);
         }
     }
 
@@ -569,14 +569,22 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     public boolean onZoom(ZoomEvent event) {
         mTrackingMode = false;
         mTrackingModeTimeOut = System.currentTimeMillis();
-        TextView speedTxt = (TextView) findViewById(R.id.state);
-        speedTxt.setText("tracking:" + mTrackingMode + " zoom on " + mTrackingModeTimeOut);
+        Log.d("trackingMode", "tracking:" + mTrackingMode + " zoom on " + mTrackingModeTimeOut);
         return false;
     }
 
     @Override
     public boolean onTouch(View v, MotionEvent event) {
-        onMarkerClick(prevClickedMarker, map);
+        if (v.getClass() == MapView.class) {
+            {
+                mTrackingMode = false;
+                mTrackingModeTimeOut = System.currentTimeMillis();
+                Log.d("trackingMode", "tracking:" + mTrackingMode + " touch on " + mTrackingModeTimeOut);
+                return false;
+            }
+        } else {
+            onMarkerClick(prevClickedMarker, map);
+        }
         return false;
     }
 
@@ -584,8 +592,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     public boolean onDrag(View v, DragEvent event) {
         mTrackingMode = false;
         mTrackingModeTimeOut = System.currentTimeMillis();
-        TextView speedTxt = (TextView) findViewById(R.id.state);
-        speedTxt.setText("tracking:" + mTrackingMode + " drag on " + mTrackingModeTimeOut);
+        Log.d("trackingMode", "tracking:" + mTrackingMode + " drag on " + mTrackingModeTimeOut);
         return false;
     }
 
