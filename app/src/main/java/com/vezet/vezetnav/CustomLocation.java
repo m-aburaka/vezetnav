@@ -13,8 +13,9 @@ public class CustomLocation {
     public String SubDescription;
     public float Lon;
     public float Lat;
+    public String Label;
 
-    public CustomLocation(String name, int type, String desc, String subDescription, float lon, float lat)
+    public CustomLocation(String name, int type, String desc, String subDescription, float lon, float lat, String label)
     {
         Name = name;
         Type = type;
@@ -22,6 +23,7 @@ public class CustomLocation {
         SubDescription = subDescription;
         Lon = lon;
         Lat = lat;
+        Label = label;
     }
 
     public GeoPoint getGeoPoint()

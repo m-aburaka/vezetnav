@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <list>
-    <location name="first" type ="1" desc="desc" subdesc="subdescripion1" long="30.0" lat="60.351363"></location>
-    <location name="first2" type="1" desc="desc" subdesc="subdescription2" long="15.0" lat="60.351363"></location>
+    <location name="first" label="mipmap/ic_launcher" type ="1" desc="desc" subdesc="subdescripion1" long="30.518638" lat="59.916558"></location>
+    <location name="first" label="mipmap/ic_launcher" type ="1" desc="desc" subdesc="subdescripion1" long="30.0" lat="60.351363"></location>
+    <location name="first type 2" label="mipmap/ic_launcher" type ="2" desc="desc" subdesc="subdescripion1" long="30.0" lat="60.351363"></location>
+    <location name="first type 3" label="mipmap/ic_launcher" type ="3" desc="desc" subdesc="subdescripion1" long="30.0" lat="60.351363"></location>
+    <location name="first type 4" label="mipmap/ic_launcher" type ="4" desc="desc" subdesc="subdescripion1" long="30.0" lat="60.351363"></location>
+    <location name="first type 5" label="mipmap/ic_launcher" type ="5" desc="desc" subdesc="subdescripion1" long="30.0" lat="60.351363"></location>
 </list>

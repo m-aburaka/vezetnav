@@ -4,14 +4,17 @@ import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.Drawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
+import android.util.Log;
 import android.view.DragEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -40,7 +43,6 @@ import java.util.ArrayList;
 import java.util.Locale;
 
 public class MapActivity extends AppCompatActivity implements LocationListener, Marker.OnMarkerClickListener, MapListener, View.OnTouchListener, View.OnDragListener {
-
     private LocationManager mLocationManager;
     private DirectedLocationOverlay myLocationOverlay;
     private IMapController mapController;
@@ -51,19 +53,19 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
     private boolean mTrackingMode = true;
     private long mTrackingModeTimeOut;
-    private float mAzimuthAngleSpeed;
     private ArrayList<Marker> destinationMarkers = new ArrayList<Marker>();
     private Polyline roadOverlay;
     private Marker prevClickedMarker;
     private int SelectedType;
     private Road currentRoad;
+    private UpdateMapOverlayThread socketThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_map);
         Intent intent = getIntent();
-        SelectedType = intent.getIntExtra("Type",1);
+        SelectedType = intent.getIntExtra("Type", 1);
 
         Configuration.getInstance().setOsmdroidBasePath(new File(Environment.getExternalStorageDirectory(), "osmdroid"));
         Configuration.getInstance().setOsmdroidTileCache(new File(Environment.getExternalStorageDirectory(), "osmdroid/tiles"));
@@ -79,10 +81,16 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         mLocationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
 
         myLocationOverlay = new DirectedLocationOverlay(this);
+        myLocationOverlay.setEnabled(false);
         map.getOverlays().add(myLocationOverlay);
 
         map.setMapListener(this);
         map.setOnDragListener(this);
+
+
+        Handler handler = new Handler();
+        socketThread = new UpdateMapOverlayThread(handler);
+        socketThread.start();
 
         setLocationService();
 
@@ -104,21 +112,18 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
                 location = mLocationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
         }
         if (location != null) {
-            //location known:
             onLocationChanged(location);
-        } else {
-            //no location known: hide myLocationOverlay
-            myLocationOverlay.setEnabled(false);
         }
     }
 
     /**
      * callback to store activity status before a restart (orientation change for instance)
      */
-    @Override protected void onSaveInstanceState (Bundle outState){
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
         outState.putParcelable("currentPoint", currentPoint);
         outState.putParcelable("destinationPoint", destinationPoint);
-        outState.putParcelable("currentRoad",currentRoad);
+        outState.putParcelable("currentRoad", currentRoad);
     }
 
     private void setMarkers() {
@@ -131,7 +136,10 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
                 marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
                 map.getOverlays().add(marker);
 
-                marker.setIcon(getResources().getDrawable(R.mipmap.ic_launcher));
+                int imageResource = getResources().getIdentifier(location.Label, null, getPackageName());
+                Drawable image = getResources().getDrawable(imageResource);
+
+                marker.setIcon(image);
                 marker.setTitle(location.Name);
                 marker.setSnippet(location.Description);
                 marker.setSubDescription(location.Description);
@@ -201,16 +209,18 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
     public void newLocation(View view) {
         Location loc = new Location("Test");
+        if (currentPoint == null) {
+            currentPoint = new GeoPoint(60, 30);
+        }
         loc.setLatitude(currentPoint.getLatitude());
         loc.setLongitude(currentPoint.getLongitude() + 0.01);
         loc.setAltitude(0);
         loc.setAccuracy(10f);
         loc.setProvider(LocationManager.GPS_PROVIDER);
-        //loc.setElapsedRealtimeNanos(System.nanoTime());
         loc.setTime(System.currentTimeMillis());
         loc.setSpeed(5);
-        //loc.setTestProviderLocation("Test", loc);
         onLocationChanged(loc);
+        mTrackingMode = true;
     }
 
     public static double getDistance(double lat1, double lat2, double lon1,
@@ -238,6 +248,8 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     long mLastTime = 0; // milliseconds
     double mSpeed = 0.0; // km/h
 
+    int mAccuracy = 0;
+
     @Override
     public void onLocationChanged(final Location pLoc) {
         long currentTime = System.currentTimeMillis();
@@ -248,65 +260,78 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
             return;
         }
         mLastTime = currentTime;
+        mSpeed = pLoc.getSpeed() * 3.6;
+        mAccuracy = (int) pLoc.getAccuracy();
 
         GeoPoint newLocation = new GeoPoint(pLoc);
         currentPoint = newLocation;
+
+        //first time, update from UI thread and set markers
         if (!myLocationOverlay.isEnabled()) {
-            //we get the location for the first time:
             myLocationOverlay.setEnabled(true);
-            map.getController().animateTo(newLocation);
+            UpdateLocation(pLoc);
             setMarkers();
         }
+        //next time, update from background thread
+        else {
+            socketThread.setLocation(pLoc);
+        }
+    }
 
-        GeoPoint prevLocation = myLocationOverlay.getLocation();
-        myLocationOverlay.setLocation(newLocation);
-        myLocationOverlay.setAccuracy((int) pLoc.getAccuracy());
-
-        if (prevLocation != null && pLoc.getProvider().equals(LocationManager.GPS_PROVIDER)) {
-            mSpeed = pLoc.getSpeed() * 3.6;
-            long speedInt = Math.round(mSpeed);
-            TextView speedTxt = (TextView) findViewById(R.id.speed);
-            speedTxt.setText(speedInt + " km/h");
-
-            //TODO: check if speed is not too small
-            if (mSpeed >= 0.1) {
-                mAzimuthAngleSpeed = pLoc.getBearing();
-                myLocationOverlay.setBearing(mAzimuthAngleSpeed);
-            }
+    private void UpdateLocation(Location location) {
+        UpdateTrackingMode(location);
+        if (destinationPoint == null) {
+            UpdateLocationOverlay(location);
+        } else {
+            //myLocationOverlay.setEnabled(false);
+            setDestination(new GeoPoint(location), destinationPoint);
         }
 
+        if (mTrackingMode) {
+            TrackMap(location);
+        } else {
+            map.invalidate();
+        }
+    }
+
+    public void UpdateLocationOverlay(Location location) {
+        GeoPoint prevLocation = myLocationOverlay.getLocation();
+        myLocationOverlay.setLocation(new GeoPoint(location));
+        myLocationOverlay.setAccuracy((int) location.getAccuracy());
+
+        double speed = location.getSpeed() * 3.6;
+        float azimuthAngleSpeed = location.getBearing();
+
+        if (prevLocation != null && speed >= 0.1) {
+            myLocationOverlay.setBearing(azimuthAngleSpeed);
+        }
+    }
+
+    public void UpdateTrackingMode(Location location) {
+        long currentTime = System.currentTimeMillis();
         long timeout = currentTime - mTrackingModeTimeOut;
         if (!mTrackingMode && timeout > 10000) {
             mTrackingMode = true;
             TextView speedTxt = (TextView) findViewById(R.id.state);
             speedTxt.setText("tracking:" + mTrackingMode);
         }
+    }
 
-        if (mTrackingMode) {
+    public void TrackMap(Location location) {
+        double speed = location.getSpeed() * 3.6;
+        float azimuthAngleSpeed = location.getBearing();
 
-            if (destinationPoint != null) {
-                if (mSpeed < 10)
-                    mapController.setZoom(20);
-                else if (mSpeed < 30)
-                    mapController.setZoom(18);
-                else if (mSpeed < 50)
-                    mapController.setZoom(15);
-                else
-                    mapController.setZoom(12);
-            }
-
-            //keep the map view centered on current location:
-            map.getController().animateTo(newLocation);
-            map.setMapOrientation(-mAzimuthAngleSpeed);
-
-        } else {
-            //just redraw the location overlay:
-            map.invalidate();
-        }
-
-        if (destinationPoint != null) {
-            setDestination(currentPoint, destinationPoint);
-        }
+        if (speed < 10)
+            mapController.setZoom(25);
+        else if (speed < 30)
+            mapController.setZoom(20);
+        else if (speed < 50)
+            mapController.setZoom(18);
+        else
+            mapController.setZoom(15);
+        //keep the map view centered on current location:
+        map.getController().animateTo(new GeoPoint(location));
+        map.setMapOrientation(-azimuthAngleSpeed);
     }
 
     @Override
@@ -537,11 +562,6 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
     @Override
     public boolean onScroll(ScrollEvent event) {
-//        mTrackingMode = false;
-//        mTrackingModeTimeOut = System.currentTimeMillis();
-//        TextView speedTxt = (TextView) findViewById(R.id.state);
-//        speedTxt.setText("tracking:" + mTrackingMode + " scroll on " + mTrackingModeTimeOut);
-
         return false;
     }
 
@@ -570,7 +590,6 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     }
 
     private class UpdateRoadTask extends AsyncTask<Object, Void, Road> {
-
         private final Context mContext;
 
         public UpdateRoadTask(Context context) {
@@ -579,7 +598,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
         protected Road doInBackground(Object... params) {
             @SuppressWarnings("unchecked")
-            ArrayList<GeoPoint> waypoints = (ArrayList<GeoPoint>)params[0];
+            ArrayList<GeoPoint> waypoints = (ArrayList<GeoPoint>) params[0];
             RoadManager roadManager;
             Locale locale = Locale.getDefault();
             roadManager = new OSRMRoadManager(mContext);
@@ -588,6 +607,65 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
         protected void onPostExecute(Road result) {
             displayRoad(result);
+        }
+    }
+
+    class UpdateMapOverlayThread extends Thread {
+        private final Handler mHandler;
+        private Location extrapolatedLocation;
+        private Location originalLocation;
+        private final float refreshRatePerSecond = 10;
+
+        UpdateMapOverlayThread(Handler handler) {
+            mHandler = handler;
+        }
+
+        public void setLocation(Location loc) {
+            synchronized (this) {
+                if (originalLocation != null && originalLocation.getLatitude() == loc.getLatitude() && originalLocation.getLongitude() == loc.getLongitude()) {
+                    Log.d("updateMapOverlayThread", "ignore " + loc.toString());
+                    return;
+                }
+
+                extrapolatedLocation = new Location(loc);
+                originalLocation = new Location(loc);
+                Log.d("updateMapOverlayThread", "set " + loc.toString());
+            }
+        }
+
+        public void run() {
+            while (true) {
+                try {
+                    Thread.sleep((long) (1000 / refreshRatePerSecond));
+                }
+                catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+
+                synchronized (this) {
+                    if (extrapolatedLocation == null) {
+                        continue;
+                    }
+
+                    GeoPoint point = new GeoPoint(extrapolatedLocation);
+                    double timeSpanBetweenExtrapolatedLocationsInSeconds = (System.currentTimeMillis() - extrapolatedLocation.getTime()) / 1000f;
+                    long timeSpanBetweenOriginalLocationsInSecond = (System.currentTimeMillis() - originalLocation.getTime()) / 1000;
+                    if (timeSpanBetweenOriginalLocationsInSecond > 10) continue;
+                    double distance = timeSpanBetweenExtrapolatedLocationsInSeconds != 0 ? extrapolatedLocation.getSpeed() * timeSpanBetweenExtrapolatedLocationsInSeconds : 0;
+                    point = point.destinationPoint(distance, extrapolatedLocation.getBearing());
+                    extrapolatedLocation.setTime(System.currentTimeMillis());
+                    extrapolatedLocation.setLatitude(point.getLatitude());
+                    extrapolatedLocation.setLongitude(point.getLongitude());
+                    Log.d("updateMapOverlayThread", "send " + extrapolatedLocation.toString());
+
+                    mHandler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            UpdateLocation(extrapolatedLocation);
+                        }
+                    });
+                }
+            }
         }
     }
 }

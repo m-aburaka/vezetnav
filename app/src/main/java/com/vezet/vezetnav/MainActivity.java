@@ -32,15 +32,41 @@ public class MainActivity extends AppCompatActivity {
         checkPermissions();
     }
 
-    public void button(View view){
+    public void button1(View view){
         Intent intent = new Intent(this, MapActivity.class);
         int type = 1;
         intent.putExtra("Type", type);
         startActivity(intent);
     }
 
-    private void parseMarkers() {
+    public void button2(View view){
+        Intent intent = new Intent(this, MapActivity.class);
+        int type = 2;
+        intent.putExtra("Type", type);
+        startActivity(intent);
+    }
 
+    public void button3(View view){
+        Intent intent = new Intent(this, MapActivity.class);
+        int type = 3;
+        intent.putExtra("Type", type);
+        startActivity(intent);
+    }
+    public void button4(View view){
+        Intent intent = new Intent(this, MapActivity.class);
+        int type = 4;
+        intent.putExtra("Type", type);
+        startActivity(intent);
+    }
+
+    public void button5(View view){
+        Intent intent = new Intent(this, MapActivity.class);
+        int type = 5;
+        intent.putExtra("Type", type);
+        startActivity(intent);
+    }
+
+    private void parseMarkers() {
         try {
             XmlResourceParser parser = getResources().getXml(R.xml.customlocations);
             parser.next();
@@ -50,13 +76,13 @@ public class MainActivity extends AppCompatActivity {
                         && parser.getName().equalsIgnoreCase("location")) {
 
                     String name = parser.getAttributeValue(null, "name");
+                    String label = parser.getAttributeValue(null, "label");
                     int type = parser.getAttributeIntValue(null, "type",0);
                     String desc = parser.getAttributeValue(null, "desc");
                     String subDesc = parser.getAttributeValue(null, "subdesc");
                     float lon = parser.getAttributeFloatValue(null, "long", 0);
                     float lat = parser.getAttributeFloatValue(null, "lat", 0);
-                    locations.add(new CustomLocation(name, type, desc, subDesc, lon, lat));
-                    break;
+                    locations.add(new CustomLocation(name, type, desc, subDesc, lon, lat, label));
                 }
                 eventType = parser.next();
             }
