@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.os.Debug;
 import android.os.Environment;
 import android.os.Handler;
+import android.support.constraint.ConstraintLayout;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
@@ -21,6 +22,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.TextView;
 
+import org.osmdroid.api.IGeoPoint;
 import org.osmdroid.api.IMapController;
 import org.osmdroid.bonuspack.routing.OSRMRoadManager;
 import org.osmdroid.bonuspack.routing.Road;
@@ -43,9 +45,10 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Locale;
 
-public class MapActivity extends AppCompatActivity implements LocationListener, Marker.OnMarkerClickListener, MapListener, View.OnTouchListener, View.OnDragListener {
+public class MapActivity extends AppCompatActivity implements LocationListener, Marker.OnMarkerClickListener,  View.OnTouchListener, InterceptedTouchListener {
     private LocationManager mLocationManager;
     private DirectedLocationOverlay myLocationOverlay;
+    private DirectedLocationOverlay roadStartLocationOverlay;
     private IMapController mapController;
     private MapView map;
 
@@ -85,12 +88,17 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         myLocationOverlay.setEnabled(false);
         map.getOverlays().add(myLocationOverlay);
 
-        map.setMapListener(this);
-        map.setOnDragListener(this);
+        roadStartLocationOverlay = new DirectedLocationOverlay(this);
+        roadStartLocationOverlay.setEnabled(false);
+        map.getOverlays().add(roadStartLocationOverlay);
+
         map.setOnTouchListener(this);
 
+        CustomConstraintLayout layout = (CustomConstraintLayout) findViewById(R.id.layout);
+        layout.setOnInterceptedTouchListener(this);
+
         Handler handler = new Handler();
-        socketThread = new UpdateMapOverlayThread(handler);
+        socketThread = new UpdateMapOverlayThread(handler, this);
         socketThread.start();
 
         setLocationService();
@@ -99,7 +107,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
             currentPoint = savedInstanceState.getParcelable("currentPoint");
             destinationPoint = savedInstanceState.getParcelable("currentDestination");
             currentRoad = savedInstanceState.getParcelable("currentRoad");
-            displayRoad(currentRoad);
+            UpdateRoad(currentRoad);
         }
         if (destinationPoint == null)
             setMarkers();
@@ -157,50 +165,22 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         }
     }
 
-    protected void setDestination(GeoPoint startPoint, GeoPoint endPoint) {
-        ArrayList<GeoPoint> waypoints = new ArrayList<GeoPoint>();
-        waypoints.add(startPoint);
-        waypoints.add(endPoint);
-        TextView textView = (TextView) findViewById(R.id.textView);
-        textView.setText("поиск маршрута");
-
-        new UpdateRoadTask(this).execute(waypoints);
-    }
-
-    private void displayRoad(Road road) {
-        currentRoad = road;
-        if (roadOverlay != null)
-            map.getOverlays().remove(roadOverlay);
-
-        if (road == null) return;
-        roadOverlay = RoadManager.buildRoadOverlay(road);
-        map.getOverlays().add(roadOverlay);
-        map.invalidate();
-
-        if (road.mNodes.size() >= 1) {
-            RoadNode node = road.mNodes.get(1);
-            displayNextStep(node.mManeuverType, node.mLength, road.mLength, road.mDuration);
-        }
-    }
-
-    private void displayNextStep(int type, double length, double overallLength, double duration) {
-        TextView textView = (TextView) findViewById(R.id.textView);
-        textView.setText(getLocalizedDirections(type) + " через " + String.format("%.2f", length) + "км" + "       " + String.format("%.2f", overallLength) + "км" + " " + duration + "сек. ");
-    }
-
     @Override
     public boolean onMarkerClick(Marker marker, MapView mapView) {
+        if (marker == null){
+            prevClickedMarker = null;
+            return false;
+        }
         if (prevClickedMarker == null || marker != prevClickedMarker) {
             prevClickedMarker = marker;
             marker.showInfoWindow();
             InfoWindow infoWindow = marker.getInfoWindow();
             infoWindow.getView().setOnTouchListener(this);
 
-
         } else if (prevClickedMarker == marker) {
             clearDestinationMarkers();
             destinationPoint = marker.getPosition();
-            setDestination(currentPoint, destinationPoint);
+            socketThread.setDestination(destinationPoint);
             prevClickedMarker.closeInfoWindow();
             return true;
         }
@@ -281,11 +261,11 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
     private void UpdateLocation(Location location) {
         UpdateTrackingMode(location);
+        //TODO: disable location overlay if road is rendered
         if (destinationPoint == null) {
             UpdateLocationOverlay(location);
         } else {
-            //myLocationOverlay.setEnabled(false);
-            setDestination(new GeoPoint(location), destinationPoint);
+            myLocationOverlay.setEnabled(false);
         }
 
         if (mTrackingMode) {
@@ -298,7 +278,6 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     public void UpdateLocationOverlay(Location location) {
         GeoPoint prevLocation = myLocationOverlay.getLocation();
         myLocationOverlay.setLocation(new GeoPoint(location));
-        myLocationOverlay.setAccuracy((int) location.getAccuracy());
 
         double speed = location.getSpeed() * 3.6;
         float azimuthAngleSpeed = location.getBearing();
@@ -318,20 +297,54 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     }
 
     public void TrackMap(Location location) {
-        double speed = location.getSpeed() * 3.6;
+        double speed = location.getSpeed();
         float azimuthAngleSpeed = location.getBearing();
 
         if (speed < 10)
-            mapController.setZoom(25);
-        else if (speed < 30)
-            mapController.setZoom(20);
-        else if (speed < 50)
             mapController.setZoom(18);
-        else
+        else if (speed < 30)
             mapController.setZoom(15);
+        else if (speed < 50)
+            mapController.setZoom(12);
+        else
+            mapController.setZoom(10);
         //keep the map view centered on current location:
-        map.getController().animateTo(new GeoPoint(location));
-        map.setMapOrientation(-azimuthAngleSpeed);
+
+        GeoPoint newPoint = new GeoPoint(location);
+        int deltaDistance = newPoint.distanceTo(map.getMapCenter());
+        if (deltaDistance > 100)
+            map.getController().animateTo(newPoint);
+        float deltaOrientation = map.getMapOrientation() - -azimuthAngleSpeed;
+        if (deltaOrientation > 10)
+            map.setMapOrientation(-azimuthAngleSpeed);
+
+        if (deltaDistance <= 100 || deltaOrientation <= 10)
+            map.invalidate();
+    }
+
+    private void UpdateRoad(Road road) {
+        currentRoad = road;
+        if (roadOverlay != null)
+            map.getOverlays().remove(roadOverlay);
+
+        if (road == null) return;
+
+        if (road.mNodes.size() >= 1) {
+
+            RoadNode node = road.mNodes.get(1);
+            roadStartLocationOverlay.setEnabled(true);
+            roadStartLocationOverlay.setLocation(node.mLocation);
+            UpdateNextStep(node.mManeuverType, node.mLength, road.mLength, road.mDuration);
+        }
+
+        roadOverlay = RoadManager.buildRoadOverlay(road);
+        map.getOverlays().add(roadOverlay);
+        map.invalidate();
+    }
+
+    private void UpdateNextStep(int type, double length, double overallLength, double duration) {
+        TextView textView = (TextView) findViewById(R.id.textView);
+        textView.setText(getLocalizedDirections(type) + " через " + String.format("%.2f", length) + "км" + "       " + String.format("%.2f", overallLength) + "км" + " " + duration + "сек. ");
     }
 
     @Override
@@ -535,9 +548,6 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         super.onResume();
         boolean isOneProviderEnabled = startLocationUpdates();
         myLocationOverlay.setEnabled(isOneProviderEnabled);
-        //TODO: not used currently
-        //mSensorManager.registerListener(this, mOrientation, SensorManager.SENSOR_DELAY_NORMAL);
-        //sensor listener is causing a high CPU consumption...
     }
 
     @Override
@@ -546,7 +556,6 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             mLocationManager.removeUpdates(this);
         }
-        //TODO: mSensorManager.unregisterListener(this);
     }
 
     boolean startLocationUpdates() {
@@ -561,70 +570,31 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     }
 
     @Override
-    public boolean onScroll(ScrollEvent event) {
-        return false;
-    }
-
-    @Override
-    public boolean onZoom(ZoomEvent event) {
-        mTrackingMode = false;
-        mTrackingModeTimeOut = System.currentTimeMillis();
-        Log.d("trackingMode", "tracking:" + mTrackingMode + " zoom on " + mTrackingModeTimeOut);
-        return false;
-    }
-
-    @Override
     public boolean onTouch(View v, MotionEvent event) {
-        if (v.getClass() == MapView.class) {
-            {
-                mTrackingMode = false;
-                mTrackingModeTimeOut = System.currentTimeMillis();
-                Log.d("trackingMode", "tracking:" + mTrackingMode + " touch on " + mTrackingModeTimeOut);
-                return false;
-            }
-        } else {
             onMarkerClick(prevClickedMarker, map);
-        }
         return false;
     }
 
     @Override
-    public boolean onDrag(View v, DragEvent event) {
+    public void onInterceptedTouch() {
         mTrackingMode = false;
         mTrackingModeTimeOut = System.currentTimeMillis();
-        Log.d("trackingMode", "tracking:" + mTrackingMode + " drag on " + mTrackingModeTimeOut);
-        return false;
-    }
-
-    private class UpdateRoadTask extends AsyncTask<Object, Void, Road> {
-        private final Context mContext;
-
-        public UpdateRoadTask(Context context) {
-            this.mContext = context;
-        }
-
-        protected Road doInBackground(Object... params) {
-            @SuppressWarnings("unchecked")
-            ArrayList<GeoPoint> waypoints = (ArrayList<GeoPoint>) params[0];
-            RoadManager roadManager;
-            Locale locale = Locale.getDefault();
-            roadManager = new OSRMRoadManager(mContext);
-            return roadManager.getRoad(waypoints);
-        }
-
-        protected void onPostExecute(Road result) {
-            displayRoad(result);
-        }
+        Log.d("trackingMode", "tracking:" + mTrackingMode + " intercepted touch on " + mTrackingModeTimeOut);
     }
 
     class UpdateMapOverlayThread extends Thread {
         private final Handler mHandler;
+        private final Context context;
         private Location extrapolatedLocation;
         private Location originalLocation;
-        private final float refreshRatePerSecond = 10;
+        private GeoPoint destinationPoint;
+        private Road currentRoad;
+        private final float refreshRatePerSecond = 1;
+        private UpdateRoadTask updateRoadTask;
 
-        UpdateMapOverlayThread(Handler handler) {
+        UpdateMapOverlayThread(Handler handler, Context cont) {
             mHandler = handler;
+            context = cont;
         }
 
         public void setLocation(Location loc) {
@@ -636,14 +606,24 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
                 extrapolatedLocation = new Location(loc);
                 originalLocation = new Location(loc);
+
                 Log.d("updateMapOverlayThread", "set " + loc.toString());
             }
+        }
+
+
+        public void setDestination(GeoPoint destination) {
+            if (destination == destinationPoint) return;
+            currentRoad = null;
+            if (updateRoadTask != null)
+                updateRoadTask.cancel(true);
+            destinationPoint = destination;
         }
 
         public void run() {
             while (true) {
                 try {
-                    Thread.sleep((long) (1000 / refreshRatePerSecond));
+                    Thread.sleep(300);
                 }
                 catch (InterruptedException e) {
                     e.printStackTrace();
@@ -664,14 +644,53 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
                     extrapolatedLocation.setLatitude(point.getLatitude());
                     extrapolatedLocation.setLongitude(point.getLongitude());
                     Log.d("updateMapOverlayThread", "send " + extrapolatedLocation.toString());
+                    //ExtrapolateRoad();
 
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {
                             UpdateLocation(extrapolatedLocation);
+                            UpdateRoad(currentRoad);
                         }
                     });
                 }
+            }
+        }
+
+        private void ExtrapolateRoad()
+        {
+            if (destinationPoint != null && currentRoad == null &&
+                    (updateRoadTask == null || updateRoadTask.getStatus() == AsyncTask.Status.FINISHED))
+            {
+                ArrayList<GeoPoint> waypoints = new ArrayList<GeoPoint>();
+                waypoints.add(new GeoPoint(originalLocation));
+                waypoints.add(new GeoPoint(destinationPoint));
+                updateRoadTask = new UpdateRoadTask(context);
+                return;
+            }
+            //TODO: reset road if too far, or just update road every 10 second
+            //TODO: set start of current road to extrapolated location
+        }
+
+        private class UpdateRoadTask extends AsyncTask<Object, Void, Road> {
+            private final Context mContext;
+
+            public UpdateRoadTask(Context context) {
+                this.mContext = context;
+            }
+
+            protected Road doInBackground(Object... params) {
+                @SuppressWarnings("unchecked")
+                ArrayList<GeoPoint> waypoints = (ArrayList<GeoPoint>) params[0];
+                RoadManager roadManager;
+                //TODO: use built in localization
+                Locale locale = Locale.getDefault();
+                roadManager = new OSRMRoadManager(mContext);
+                return roadManager.getRoad(waypoints);
+            }
+
+            protected void onPostExecute(Road result) {
+                currentRoad = result;
             }
         }
     }
