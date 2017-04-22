@@ -159,7 +159,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     private void setMarkers() {
         if (currentPoint == null) return;
 
-        if (BuildConfig.ENABLE_RANDOM_MARKERS) {
+        if (BuildConfig.ENABLE_RANDOM_MARKERS && !MainActivity.isRandomLocationsSet) {
 
             //add points every two kilometers on 0, 90, 180, 270 degrees;
             for (int i = 1; i < 50; i++){
@@ -173,6 +173,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
                 MainActivity.locations.add(new CustomLocation("Random", SelectedType, "desc", "subdesc", (float)point180.getLongitude(), (float)point180.getLatitude(), "mipmap/ic_launcher"));
                 MainActivity.locations.add(new CustomLocation("Random", SelectedType, "desc", "subdesc", (float)point270.getLongitude(), (float)point270.getLatitude(), "mipmap/ic_launcher"));
             }
+            MainActivity.isRandomLocationsSet = true;
         }
 
         for (CustomLocation location : MainActivity.locations) {

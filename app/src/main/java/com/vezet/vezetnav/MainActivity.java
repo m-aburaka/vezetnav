@@ -24,6 +24,8 @@ import static android.provider.AlarmClock.EXTRA_MESSAGE;
 public class MainActivity extends AppCompatActivity {
 
     public static ArrayList<CustomLocation> locations = new ArrayList<CustomLocation>();
+    public static boolean isRandomLocationsSet;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
