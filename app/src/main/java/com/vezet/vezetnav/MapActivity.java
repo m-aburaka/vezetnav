@@ -9,29 +9,23 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.Debug;
 import android.os.Environment;
 import android.os.Handler;
-import android.support.constraint.ConstraintLayout;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
-import android.view.DragEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.TextView;
 
-import org.osmdroid.api.IGeoPoint;
 import org.osmdroid.api.IMapController;
 import org.osmdroid.bonuspack.routing.OSRMRoadManager;
 import org.osmdroid.bonuspack.routing.Road;
 import org.osmdroid.bonuspack.routing.RoadManager;
 import org.osmdroid.bonuspack.routing.RoadNode;
 import org.osmdroid.config.Configuration;
-import org.osmdroid.events.MapListener;
-import org.osmdroid.events.ScrollEvent;
-import org.osmdroid.events.ZoomEvent;
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
 import org.osmdroid.util.GeoPoint;
 import org.osmdroid.util.NetworkLocationIgnorer;
@@ -45,29 +39,37 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Locale;
 
-public class MapActivity extends AppCompatActivity implements LocationListener, Marker.OnMarkerClickListener,  View.OnTouchListener, InterceptedTouchListener {
+public class MapActivity extends AppCompatActivity implements LocationListener, Marker.OnMarkerClickListener, View.OnTouchListener, InterceptedTouchListener {
+    public static final String TRACKING_MODE = "TRACKING_MODE";
+    private static final String UPDATE_ROAD = "UPDATE_ROAD";
+    public static final String UPDATE_MAP_OVERLAY = "UPDATE_MAP_OVERLAY";
     private LocationManager mLocationManager;
     private DirectedLocationOverlay myLocationOverlay;
-    private DirectedLocationOverlay roadStartLocationOverlay;
     private IMapController mapController;
     private MapView map;
 
     private GeoPoint currentPoint;
     private GeoPoint destinationPoint;
 
-    private boolean mTrackingMode = true;
+    private boolean mTrackingMode = false;
     private long mTrackingModeTimeOut;
     private ArrayList<Marker> destinationMarkers = new ArrayList<Marker>();
     private Polyline roadOverlay;
     private Marker prevClickedMarker;
     private int SelectedType;
     private Road currentRoad;
-    private UpdateMapOverlayThread socketThread;
+    private UpdateMapOverlayThread backgroundThread;
+    private ArrayList<Marker> roadMarkers = new ArrayList<Marker>();
+    private TextView instructionsTextView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_map);
+        instructionsTextView = (TextView) findViewById(R.id.textView);
+
+        setLocale();
+
         Intent intent = getIntent();
         SelectedType = intent.getIntExtra("Type", 1);
 
@@ -88,29 +90,46 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         myLocationOverlay.setEnabled(false);
         map.getOverlays().add(myLocationOverlay);
 
-        roadStartLocationOverlay = new DirectedLocationOverlay(this);
-        roadStartLocationOverlay.setEnabled(false);
-        map.getOverlays().add(roadStartLocationOverlay);
-
-        map.setOnTouchListener(this);
+        //that suspends updates for 1000+1000 millis
+        mTrackingModeTimeOut = System.currentTimeMillis() + 1000;
 
         CustomConstraintLayout layout = (CustomConstraintLayout) findViewById(R.id.layout);
         layout.setOnInterceptedTouchListener(this);
 
         Handler handler = new Handler();
-        socketThread = new UpdateMapOverlayThread(handler, this);
-        socketThread.start();
+        backgroundThread = new UpdateMapOverlayThread(handler, this);
 
         setLocationService();
 
         if (savedInstanceState != null) {
             currentPoint = savedInstanceState.getParcelable("currentPoint");
-            destinationPoint = savedInstanceState.getParcelable("currentDestination");
-            currentRoad = savedInstanceState.getParcelable("currentRoad");
-            UpdateRoad(currentRoad);
+            destinationPoint = savedInstanceState.getParcelable("destinationPoint");
+            currentRoad = savedInstanceState.getParcelable("originalRoad");
+            backgroundThread.setDestination(destinationPoint);
+            backgroundThread.originalRoad = currentRoad;
         }
         if (destinationPoint == null)
             setMarkers();
+
+        backgroundThread.start();
+    }
+
+    private void setLocale() {
+        Locale locale = new Locale("ru");
+        Locale.setDefault(locale);
+        android.content.res.Configuration config = getBaseContext().getResources().getConfiguration();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            config.setLocale(locale                    );
+        } else {
+            config.locale = locale;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            getApplicationContext().createConfigurationContext(config);
+        } else {
+            getApplicationContext().getResources().updateConfiguration(config, null);
+        }
     }
 
     private void setLocationService() {
@@ -132,13 +151,14 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     protected void onSaveInstanceState(Bundle outState) {
         outState.putParcelable("currentPoint", currentPoint);
         outState.putParcelable("destinationPoint", destinationPoint);
-        outState.putParcelable("currentRoad", currentRoad);
+        outState.putParcelable("originalRoad", backgroundThread.originalRoad);
     }
 
     private void setMarkers() {
         if (currentPoint == null) return;
         for (CustomLocation location : MainActivity.locations) {
-            double distance = getDistance(location.Lat, currentPoint.getLatitude(), location.Lon, currentPoint.getLongitude(), 0.0, 0.0);
+            double distance = currentPoint.distanceTo(location.getGeoPoint());
+
             if (distance < 50000 && location.Type == SelectedType) {
                 Marker marker = new Marker(map);
                 marker.setPosition(location.getGeoPoint());
@@ -167,12 +187,13 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
     @Override
     public boolean onMarkerClick(Marker marker, MapView mapView) {
-        if (marker == null){
+        if (marker == null) {
             prevClickedMarker = null;
             return false;
         }
         if (prevClickedMarker == null || marker != prevClickedMarker) {
             prevClickedMarker = marker;
+            mapController.animateTo(marker.getPosition());
             marker.showInfoWindow();
             InfoWindow infoWindow = marker.getInfoWindow();
             infoWindow.getView().setOnTouchListener(this);
@@ -180,7 +201,9 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         } else if (prevClickedMarker == marker) {
             clearDestinationMarkers();
             destinationPoint = marker.getPosition();
-            socketThread.setDestination(destinationPoint);
+            instructionsTextView.setText("поиск маршрута");
+            backgroundThread.setDestination(destinationPoint);
+            mTrackingMode = true;
             prevClickedMarker.closeInfoWindow();
             return true;
         }
@@ -202,26 +225,6 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         loc.setSpeed(5);
         onLocationChanged(loc);
         mTrackingMode = true;
-    }
-
-    public static double getDistance(double lat1, double lat2, double lon1,
-                                     double lon2, double el1, double el2) {
-
-        final int R = 6371; // Radius of the earth
-
-        Double latDistance = Math.toRadians(lat2 - lat1);
-        Double lonDistance = Math.toRadians(lon2 - lon1);
-        Double a = Math.sin(latDistance / 2) * Math.sin(latDistance / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(lonDistance / 2) * Math.sin(lonDistance / 2);
-        Double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        double distance = R * c * 1000; // convert to meters
-
-        double height = el1 - el2;
-
-        distance = Math.pow(distance, 2) + Math.pow(height, 2);
-
-        return Math.sqrt(distance);
     }
 
     //------------ LocationListener implementation
@@ -249,54 +252,52 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
         //first time, update from UI thread and set markers
         if (!myLocationOverlay.isEnabled()) {
-            myLocationOverlay.setEnabled(true);
-            UpdateLocation(pLoc);
+            update(pLoc, null);
+            trackMap(pLoc);
             setMarkers();
         }
         //next time, update from background thread
         else {
-            socketThread.setLocation(pLoc);
+            backgroundThread.setLocation(pLoc);
         }
     }
 
-    private void UpdateLocation(Location location) {
-        UpdateTrackingMode(location);
-        //TODO: disable location overlay if road is rendered
-        if (destinationPoint == null) {
-            UpdateLocationOverlay(location);
-        } else {
-            myLocationOverlay.setEnabled(false);
-        }
+    private void update(Location location, Road road) {
+        updateRoad(road);
+        updateTrackingMode();
+        updateLocationOverlay(location);
 
-        if (mTrackingMode) {
-            TrackMap(location);
-        } else {
-            map.invalidate();
-        }
+        if (mTrackingMode)
+            trackMap(location);
+
+        map.invalidate();
     }
 
-    public void UpdateLocationOverlay(Location location) {
-        GeoPoint prevLocation = myLocationOverlay.getLocation();
+    private void updateLocationOverlay(Location location) {
+        //GeoPoint prevLocation = myLocationOverlay.getLocation();
         myLocationOverlay.setLocation(new GeoPoint(location));
+        myLocationOverlay.setEnabled(true);
 
         double speed = location.getSpeed() * 3.6;
         float azimuthAngleSpeed = location.getBearing();
 
-        if (prevLocation != null && speed >= 0.1) {
+        //i don't know why original code checked for prevLocation
+        //if (prevLocation != null && speed >= 0.1) {
+        if (speed >= 0.1) {
             myLocationOverlay.setBearing(azimuthAngleSpeed);
         }
     }
 
-    public void UpdateTrackingMode(Location location) {
+    private void updateTrackingMode() {
         long currentTime = System.currentTimeMillis();
         long timeout = currentTime - mTrackingModeTimeOut;
-        if (!mTrackingMode && timeout > 10000) {
+        if (!mTrackingMode && timeout > 5000) {
             mTrackingMode = true;
-            Log.d("trackingMode", "tracking:" + mTrackingMode);
+            Log.d(TRACKING_MODE, "tracking:" + mTrackingMode);
         }
     }
 
-    public void TrackMap(Location location) {
+    private boolean trackMap(Location location) {
         double speed = location.getSpeed();
         float azimuthAngleSpeed = location.getBearing();
 
@@ -312,39 +313,62 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
         GeoPoint newPoint = new GeoPoint(location);
         int deltaDistance = newPoint.distanceTo(map.getMapCenter());
-        if (deltaDistance > 100)
-            map.getController().animateTo(newPoint);
-        float deltaOrientation = map.getMapOrientation() - -azimuthAngleSpeed;
-        if (deltaOrientation > 10)
+        if (deltaDistance > 5) {
+            //map.getController().animateTo(newPoint);
+            mapController.setCenter(newPoint);
+        }
+        float deltaOrientation = Math.abs(map.getMapOrientation() - -azimuthAngleSpeed);
+        //update orientation only if path is set and markers not needed. otherwise marker's hittest would not work
+        if (deltaOrientation > 10 && currentRoad != null)
             map.setMapOrientation(-azimuthAngleSpeed);
 
-        if (deltaDistance <= 100 || deltaOrientation <= 10)
-            map.invalidate();
+        return deltaDistance <= 100 || deltaOrientation <= 10;
     }
 
-    private void UpdateRoad(Road road) {
+    private void updateRoad(Road road) {
         currentRoad = road;
         if (roadOverlay != null)
             map.getOverlays().remove(roadOverlay);
 
-        if (road == null) return;
+        if (road == null) {
+            if (destinationPoint != null) {
+                instructionsTextView.setText("поиск маршрута");
+            }
+            return;
+        }
 
         if (road.mNodes.size() >= 1) {
+            RoadNode node = road.mNodes.get(0);
 
-            RoadNode node = road.mNodes.get(1);
-            roadStartLocationOverlay.setEnabled(true);
-            roadStartLocationOverlay.setLocation(node.mLocation);
-            UpdateNextStep(node.mManeuverType, node.mLength, road.mLength, road.mDuration);
+            updateNextStep(node, road);
+        }
+
+        for (Marker marker:
+                roadMarkers) {
+            map.getOverlays().remove(marker);
+        }
+
+        if (BuildConfig.ENABLE_ROAD_NODES) {
+            for (RoadNode node :
+                    road.mNodes) {
+                Marker marker = new Marker(map);
+                marker.setPosition(node.mLocation);
+                marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
+                map.getOverlays().add(marker);
+                roadMarkers.add(marker);
+
+                marker.setIcon(getResources().getDrawable(R.mipmap.ic_launcher));
+            }
         }
 
         roadOverlay = RoadManager.buildRoadOverlay(road);
         map.getOverlays().add(roadOverlay);
-        map.invalidate();
     }
 
-    private void UpdateNextStep(int type, double length, double overallLength, double duration) {
-        TextView textView = (TextView) findViewById(R.id.textView);
-        textView.setText(getLocalizedDirections(type) + " через " + String.format("%.2f", length) + "км" + "       " + String.format("%.2f", overallLength) + "км" + " " + duration + "сек. ");
+    private void updateNextStep(RoadNode node, Road road) {
+        instructionsTextView.setText((node.mInstructions != null ? node.mInstructions : "Продолжайте движение" + " через") + " "
+                + String.format("%.2f", node.mLength) + "км" + "       "
+                + String.format("%.2f", road.mLength) + "км" + " " + String.format("%.2f", road.mDuration) + "сек. ");
     }
 
     @Override
@@ -359,195 +383,11 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     public void onStatusChanged(String provider, int status, Bundle extras) {
     }
 
-    private String getLocalizedDirections(int maneuverType) {
-        String directions;
-        switch (maneuverType) {
-            //              NONE	0	No maneuver occurs here.
-            case 0:
-                directions = null;
-                break;
-
-            //              STRAIGHT	1	Continue straight.
-            case 1:
-                directions = "Продолжайте прямо";
-                break;
-
-            //                BECOMES	2	No maneuver occurs here; road name changes.
-            case 2:
-                directions = null;
-                break;
-
-            //                SLIGHT_LEFT	3	Make a slight left.
-            case 3:
-                directions = "Левее";
-                break;
-
-            //                LEFT	4	Turn left.
-            case 4:
-                directions = "Налево";
-                break;
-
-            //                SHARP_LEFT	5	Make a sharp left.
-            case 5:
-                directions = "Правее";
-                break;
-
-            //                SLIGHT_RIGHT	6	Make a slight right.
-            case 6:
-                directions = "Направо";
-                break;
-
-            //                RIGHT	7	Turn right.
-            case 7:
-                directions = "Направо";
-                break;
-
-            //                SHARP_RIGHT	8	Make a sharp right.
-            case 8:
-                directions = "Направо";
-                break;
-
-            //                STAY_LEFT	9	Stay left.
-            case 9:
-                directions = "Держитесь левее";
-                break;
-
-            //                STAY_RIGHT	10	Stay right.
-            case 10:
-                directions = "Держитесь правее";
-                break;
-
-            //                STAY_STRAIGHT	11	Stay straight.
-            case 11:
-                directions = "Держитесь прямо";
-                break;
-
-            //                UTURN	12	Make a U-turn.
-            case 12:
-                directions = "Разворот";
-                break;
-
-            //                UTURN_LEFT	13	Make a left U-turn.
-            case 13:
-                directions = "Разворот налево";
-                break;
-
-            //                UTURN_RIGHT	14	Make a right U-turn.
-            case 14:
-                directions = "Разворот направо";
-                break;
-
-            //                EXIT_LEFT	15	Exit left.
-            case 15:
-                directions = "Выезд налево";
-                break;
-
-            //                EXIT_RIGHT	16	Exit right.
-            case 16:
-                directions = "Выезд направо";
-                break;
-
-            //                RAMP_LEFT	17	Take the ramp on the left.
-            case 17:
-                directions = "На автомагистраль налево";
-                break;
-
-            //                RAMP_RIGHT	18	Take the ramp on the right.
-            case 18:
-                directions = "На автомагистрать направо";
-                break;
-
-            //                RAMP_STRAIGHT	19	Take the ramp straight ahead.
-            case 19:
-                directions = "На автомагистрать прямо";
-                break;
-
-            //                MERGE_LEFT	20	Merge left.
-            case 20:
-                directions = "Перестройтесь налево";
-                break;
-
-            //                MERGE_RIGHT	21	Merge right.
-            case 21:
-                directions = "Перестройтесь направо";
-                break;
-
-            //                MERGE_STRAIGHT	22	Merge.
-            case 22:
-                directions = "Перестройтесь";
-                break;
-
-            //                ENTERING	23	Enter state/province.
-            case 23:
-                directions = "Продолжайте прямо";
-                break;
-
-            //                DESTINATION	24	Arrive at your destination.
-            case 24:
-                directions = "Прибытие";
-                break;
-
-            //                DESTINATION_LEFT	25	Arrive at your destination on the left.
-            case 25:
-                directions = "Прибытие слева";
-                break;
-
-            //                DESTINATION_RIGHT	26	Arrive at your destination on the right.
-            case 26:
-                directions = "Прибытие справа";
-                break;
-
-            //                ROUNDABOUT1	27	Enter the roundabout and take the 1st exit.
-            case 27:
-                directions = "Круговое движение, первый выезд";
-                break;
-
-            //                ROUNDABOUT2	28	Enter the roundabout and take the 2nd exit.
-            case 28:
-                directions = "Круговое движение, второй выезд";
-                break;
-
-            //                ROUNDABOUT3	29	Enter the roundabout and take the 3rd exit.
-            case 29:
-                directions = "Круговое движение, третий выезд";
-                break;
-
-            //                ROUNDABOUT4	30	Enter the roundabout and take the 4th exit.
-            case 30:
-                directions = "Круговое движение, четвертый выезд";
-                break;
-
-            //                ROUNDABOUT5	31	Enter the roundabout and take the 5th exit.
-            case 31:
-                directions = "Круговое движение, пятый выезд";
-                break;
-
-            //                ROUNDABOUT6	32	Enter the roundabout and take the 6th exit.
-            case 32:
-                directions = "Круговое движение, шестой выезд";
-                break;
-
-            //                ROUNDABOUT7	33	Enter the roundabout and take the 7th exit.
-            case 33:
-                directions = "Круговое движение, седьмой выезд";
-                break;
-
-            //                ROUNDABOUT8	34	Enter the roundabout and take the 8th exit.
-            case 34:
-                directions = "Круговое движение, восьмой выезд";
-                break;
-            default:
-                directions = null;
-                break;
-        }
-        return directions;
-    }
-
     @Override
     protected void onResume() {
         super.onResume();
-        boolean isOneProviderEnabled = startLocationUpdates();
-        myLocationOverlay.setEnabled(isOneProviderEnabled);
+        startLocationUpdates();
+        backgroundThread.isPaused = false;
     }
 
     @Override
@@ -556,6 +396,13 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             mLocationManager.removeUpdates(this);
         }
+        backgroundThread.isPaused = true;
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        backgroundThread.isStopped = true;
     }
 
     boolean startLocationUpdates() {
@@ -571,7 +418,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
     @Override
     public boolean onTouch(View v, MotionEvent event) {
-            onMarkerClick(prevClickedMarker, map);
+        onMarkerClick(prevClickedMarker, map);
         return false;
     }
 
@@ -579,7 +426,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     public void onInterceptedTouch() {
         mTrackingMode = false;
         mTrackingModeTimeOut = System.currentTimeMillis();
-        Log.d("trackingMode", "tracking:" + mTrackingMode + " intercepted touch on " + mTrackingModeTimeOut);
+        Log.d(TRACKING_MODE, "tracking:" + mTrackingMode + " intercepted touch on " + mTrackingModeTimeOut);
     }
 
     class UpdateMapOverlayThread extends Thread {
@@ -588,9 +435,15 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         private Location extrapolatedLocation;
         private Location originalLocation;
         private GeoPoint destinationPoint;
-        private Road currentRoad;
-        private final float refreshRatePerSecond = 1;
+        private Road originalRoad;
+        private Road extrapolatedRoad;
         private UpdateRoadTask updateRoadTask;
+        private float distanceToNextNode;
+        private RoadNode nextNode;
+        private long lastRoadCreationTime;
+        private boolean resetRoad = false;
+        private boolean isStopped = false;
+        private boolean isPaused = false;
 
         UpdateMapOverlayThread(Handler handler, Context cont) {
             mHandler = handler;
@@ -600,21 +453,20 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         public void setLocation(Location loc) {
             synchronized (this) {
                 if (originalLocation != null && originalLocation.getLatitude() == loc.getLatitude() && originalLocation.getLongitude() == loc.getLongitude()) {
-                    Log.d("updateMapOverlayThread", "ignore " + loc.toString());
+                    Log.d(UPDATE_MAP_OVERLAY, "ignore " + loc.toString());
                     return;
                 }
 
                 extrapolatedLocation = new Location(loc);
                 originalLocation = new Location(loc);
 
-                Log.d("updateMapOverlayThread", "set " + loc.toString());
+                Log.d(UPDATE_MAP_OVERLAY, "set " + loc.toString());
             }
         }
 
-
         public void setDestination(GeoPoint destination) {
             if (destination == destinationPoint) return;
-            currentRoad = null;
+            originalRoad = null;
             if (updateRoadTask != null)
                 updateRoadTask.cancel(true);
             destinationPoint = destination;
@@ -624,52 +476,216 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
             while (true) {
                 try {
                     Thread.sleep(300);
+                    if (isPaused) {
+                        Thread.sleep(2000);
+                        continue;
+                    }
                 }
                 catch (InterruptedException e) {
                     e.printStackTrace();
                 }
+
+                if (isStopped)
+                    return;
 
                 synchronized (this) {
                     if (extrapolatedLocation == null) {
                         continue;
                     }
 
+                    //if user has touched map in last second, skip update to speed up map rendering
+                    if (System.currentTimeMillis() - mTrackingModeTimeOut < 1000) continue;
+
                     GeoPoint point = new GeoPoint(extrapolatedLocation);
                     double timeSpanBetweenExtrapolatedLocationsInSeconds = (System.currentTimeMillis() - extrapolatedLocation.getTime()) / 1000f;
                     long timeSpanBetweenOriginalLocationsInSecond = (System.currentTimeMillis() - originalLocation.getTime()) / 1000;
-                    if (timeSpanBetweenOriginalLocationsInSecond > 10) continue;
-                    double distance = timeSpanBetweenExtrapolatedLocationsInSeconds != 0 ? extrapolatedLocation.getSpeed() * timeSpanBetweenExtrapolatedLocationsInSeconds : 0;
-                    point = point.destinationPoint(distance, extrapolatedLocation.getBearing());
-                    extrapolatedLocation.setTime(System.currentTimeMillis());
-                    extrapolatedLocation.setLatitude(point.getLatitude());
-                    extrapolatedLocation.setLongitude(point.getLongitude());
-                    Log.d("updateMapOverlayThread", "send " + extrapolatedLocation.toString());
-                    //ExtrapolateRoad();
+
+                    //if location is recent, extrapolate
+                    if (timeSpanBetweenOriginalLocationsInSecond < 10) {
+                        double distance = timeSpanBetweenExtrapolatedLocationsInSeconds != 0 ? extrapolatedLocation.getSpeed() * timeSpanBetweenExtrapolatedLocationsInSeconds : 0;
+                        point = point.destinationPoint(distance, extrapolatedLocation.getBearing());
+                        extrapolatedLocation.setTime(System.currentTimeMillis());
+                        extrapolatedLocation.setLatitude(point.getLatitude());
+                        extrapolatedLocation.setLongitude(point.getLongitude());
+                    }
+                    //if location is old, reset to original
+                    else {
+                        extrapolatedLocation = new Location(originalLocation);
+                    }
+                    Log.d(UPDATE_MAP_OVERLAY, "send " + extrapolatedLocation.toString());
+
+                    extrapolateRoad();
+
+                    //send COPY to avoid threading issues
+                    final Road extrapolatedRoadCopy = extrapolatedRoad != null ? copyRoad(extrapolatedRoad) : null;
+                    calcDistance(extrapolatedRoadCopy);
+
+                    //see if user getting closer to next node, with said precision
+                    if (extrapolatedRoad != null && extrapolatedRoad.mRouteHigh.size() > 1 && extrapolatedRoad.mNodes.size() > 0) {
+                        GeoPoint point1 = new GeoPoint(extrapolatedLocation);
+                        GeoPoint point2 = extrapolatedRoad.mRouteHigh.get(1);
+                        double bearing = point1.bearingTo(point2);
+                        double deltaBearing = Math.abs(bearing - extrapolatedLocation.getBearing());
+                        Log.d(UPDATE_ROAD, "deltaBearing " + deltaBearing);
+                        if (deltaBearing > 10 && point1.distanceTo(point2) > 50) {
+                            resetRoad = true;
+                            Log.d(UPDATE_ROAD, "reset road cause bearing");
+                        }
+
+                        float newDistanceToNextNode = extrapolatedRoad.mNodes.get(0).mLocation.distanceTo(new GeoPoint(originalLocation));
+
+                        //if measuring relative to same node, of course
+
+                        //nextNode.mLocation.bearingTo()
+
+                        //if (nextNode == extrapolatedRoad.mNodes.get(0) && newDistanceToNextNode > distanceToNextNode + 5) {
+                            //originalRoad = null;
+                            //Log.d(UPDATE_ROAD, "reset road cause distance");
+                        //}
+
+                        //reset nextNode if user already drove past it
+                        nextNode = extrapolatedRoad.mNodes.get(0);
+
+                        distanceToNextNode = newDistanceToNextNode;
+                    }
 
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {
-                            UpdateLocation(extrapolatedLocation);
-                            UpdateRoad(currentRoad);
+                            update(extrapolatedLocation, extrapolatedRoadCopy);
                         }
                     });
                 }
             }
         }
 
-        private void ExtrapolateRoad()
-        {
-            if (destinationPoint != null && currentRoad == null &&
-                    (updateRoadTask == null || updateRoadTask.getStatus() == AsyncTask.Status.FINISHED))
-            {
-                ArrayList<GeoPoint> waypoints = new ArrayList<GeoPoint>();
-                waypoints.add(new GeoPoint(originalLocation));
-                waypoints.add(new GeoPoint(destinationPoint));
-                updateRoadTask = new UpdateRoadTask(context);
+        private void extrapolateRoad() {
+            //if no destination
+            if (destinationPoint == null) return;
+
+
+            long dT = System.currentTimeMillis() - lastRoadCreationTime;
+            //road reset, but not > than every 10 seconds
+            if ((originalRoad == null || resetRoad) && dT > 10000) {
+                //if task not set or not reset for new destination
+                if (updateRoadTask == null || updateRoadTask.getStatus() == AsyncTask.Status.FINISHED) {
+                    ArrayList<GeoPoint> waypoints = new ArrayList<GeoPoint>();
+                    waypoints.add(new GeoPoint(originalLocation));
+                    waypoints.add(new GeoPoint(destinationPoint));
+                    updateRoadTask = new UpdateRoadTask(context);
+                    updateRoadTask.execute(waypoints);
+                    resetRoad = false;
+                    Log.d(UPDATE_ROAD, "new road task set");
+                }
+            }
+            //if task is set but not finished, wait
+            if (originalRoad == null) return;
+
+            //if path not found, reset and return
+            if (originalRoad.mNodes.size() <= 1) {
+                originalRoad = null;
                 return;
             }
-            //TODO: reset road if too far, or just update road every 10 second
-            //TODO: set start of current road to extrapolated location
+
+            extrapolatedRoad = copyRoad(originalRoad);
+            removeOldNodesInOverlay(extrapolatedRoad);
+            extrapolatedRoad.mRouteHigh.set(0, new GeoPoint(extrapolatedLocation));
+
+            //Log.d(UPDATE_ROAD, "extrapolatedRoad nodes " + extrapolatedRoad.mNodes.size());
+            //Log.d(UPDATE_ROAD, "extrapolatedRoad start " + extrapolatedRoad.mNodes.get(0).mLocation);
+        }
+
+        private void removeOldNodesInOverlay(Road road) {
+            //next node will be closest node forward (less than 90 degrees)
+            //find it and remove all previous
+
+            GeoPoint nextPoint = null;
+            float minDistance = Float.MAX_VALUE;
+            for (GeoPoint point : road.mRouteHigh) {
+                int deltaDistance = point.distanceTo(new GeoPoint(extrapolatedLocation));
+                double bearing = point.bearingTo(new GeoPoint(extrapolatedLocation));
+                double deltaBearing = Math.abs(extrapolatedLocation.getBearing() - bearing);
+
+                if (deltaDistance < minDistance && deltaBearing < 90) {
+                    nextPoint = point;
+                    minDistance = deltaDistance;
+                }
+            }
+
+            if (nextPoint == null) return;
+            int index = road.mRouteHigh.indexOf(nextPoint);
+
+            //also, find closest point for next node
+            //if we removing that point, remove node too
+
+            GeoPoint closestPointToNextNode = getClosestPointToNextNode(road);
+
+            while (index > 0) {
+                if (road.mRouteHigh.get(0) == closestPointToNextNode) {
+                    road.mNodes.remove(0);
+                    closestPointToNextNode = getClosestPointToNextNode(road);
+                }
+                road.mRouteHigh.remove(0);
+                index--;
+            }
+        }
+
+        private Road copyRoad(Road road) {
+            Road newRoad = new Road();
+
+            for (RoadNode node : road.mNodes) {
+                newRoad.mNodes.add(node);
+            }
+
+            for (GeoPoint point :
+                    road.mRouteHigh) {
+                newRoad.mRouteHigh.add(point);
+            }
+
+            return newRoad;
+        }
+
+        private void calcDistance(Road road) {
+
+            if (road == null || road.mNodes.size() < 1) return;
+
+            for (RoadNode node : road.mNodes) {
+                road.mDuration += node.mDuration;
+            }
+
+            //length to next node = length of all points till next node
+            RoadNode nextNode = road.mNodes.get(0);
+            GeoPoint lastPointTillNextNode = getClosestPointToNextNode(road);
+            int i = 0;
+            nextNode.mLength = 0;
+            while(road.mRouteHigh.size() > i + 1 && lastPointTillNextNode != road.mRouteHigh.get(i)) {
+                GeoPoint nextPoint = road.mRouteHigh.get(i + 1);
+                GeoPoint thisPoint = road.mRouteHigh.get(i);
+                double distanceTo = thisPoint.distanceTo(nextPoint);
+                nextNode.mLength += distanceTo / 1000f;
+                i++;
+            }
+
+            road.mLength = 0;
+            for (RoadNode node :
+                    road.mNodes) {
+                road.mLength += node.mLength;
+            }
+        }
+
+        private GeoPoint getClosestPointToNextNode(Road road)
+        {
+            RoadNode node = road.mNodes.get(0);
+            GeoPoint nextPoint = null;
+            float minDistance = Float.MAX_VALUE;
+            for (GeoPoint point : road.mRouteHigh) {
+                int distance = point.distanceTo(node.mLocation);
+                if (distance < minDistance) {
+                    nextPoint = point;
+                    minDistance = distance;
+                }
+            }
+            return nextPoint;
         }
 
         private class UpdateRoadTask extends AsyncTask<Object, Void, Road> {
@@ -683,14 +699,57 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
                 @SuppressWarnings("unchecked")
                 ArrayList<GeoPoint> waypoints = (ArrayList<GeoPoint>) params[0];
                 RoadManager roadManager;
-                //TODO: use built in localization
-                Locale locale = Locale.getDefault();
+
                 roadManager = new OSRMRoadManager(mContext);
                 return roadManager.getRoad(waypoints);
             }
 
             protected void onPostExecute(Road result) {
-                currentRoad = result;
+                if (result != null && result.mNodes.size() > 0) {
+                    result.mNodes.get(0).mInstructions = "Начало маршрута";
+                    result.mNodes.get(result.mNodes.size() - 1).mInstructions = "Место назначения";
+                }
+
+                //change "distance to next node" to "distance to this node"
+                for (int i = 0; i < result.mNodes.size() - 1; i++) {
+                    RoadNode node = result.mNodes.get(i);
+                    if (i == 0)
+                        node.mLength = 0;
+                    else
+                        node.mLength = result.mNodes.get(i + 1).mLength;
+                }
+
+                lastRoadCreationTime = System.currentTimeMillis();
+                Log.d(UPDATE_ROAD, "new road task done");
+
+                //if road the same as previous (except start location), ignore
+                boolean sameRoadAsPrevious = true;
+                if (originalRoad == null || originalRoad.mNodes.size() != result.mNodes.size())
+                {
+                    sameRoadAsPrevious = false;
+                }
+                else
+                {
+                    for (int i = 1; i < originalRoad.mNodes.size(); i++) {
+                        RoadNode node = originalRoad.mNodes.get(i);
+                        if (node.mLocation.distanceTo(result.mNodes.get(i).mLocation) != 0) {
+                            sameRoadAsPrevious = false;
+                            break;
+                        }
+                    }
+                }
+
+//                Log.d(UPDATE_ROAD, String.valueOf(result.mLength));
+//                for (RoadNode node :
+//                        result.mNodes) {
+//                    Log.d(UPDATE_ROAD, node.mInstructions + " " + String.valueOf(node.mLength));
+//                }
+
+                if (!sameRoadAsPrevious){
+                    Log.d(UPDATE_ROAD, "new road set");
+                    originalRoad = result;}
+                else
+                    Log.d(UPDATE_ROAD, "new road same as previous");
             }
         }
     }
