@@ -11,12 +11,14 @@ android {
         versionName "1.0"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
         buildConfigField 'boolean', 'ENABLE_ROAD_NODES', 'false'
+        buildConfigField 'boolean', 'ENABLE_RANDOM_MARKERS', 'false'
     }
     buildTypes {
         debug {
             debuggable true
             minifyEnabled false
             buildConfigField 'boolean', 'ENABLE_ROAD_NODES', 'true'
+            buildConfigField 'boolean', 'ENABLE_RANDOM_MARKERS', 'true'
         }
         release {
             minifyEnabled false

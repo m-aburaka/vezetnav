@@ -18,6 +18,7 @@ import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 import org.osmdroid.api.IMapController;
@@ -156,6 +157,23 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
     private void setMarkers() {
         if (currentPoint == null) return;
+
+        if (BuildConfig.ENABLE_RANDOM_MARKERS) {
+
+            //add points every two kilometers on 0, 90, 180, 270 degrees;
+            for (int i = 1; i < 50; i++){
+                GeoPoint point0 = currentPoint.destinationPoint(2000*i, 0);
+                GeoPoint point90 = currentPoint.destinationPoint(2000*i, 90);
+                GeoPoint point180 = currentPoint.destinationPoint(2000*i, 180);
+                GeoPoint point270 = currentPoint.destinationPoint(2000*i, 270);
+
+                MainActivity.locations.add(new CustomLocation("Random", SelectedType, "desc", "subdesc", (float)point0.getLongitude(), (float)point0.getLatitude(), "mipmap/ic_launcher"));
+                MainActivity.locations.add(new CustomLocation("Random", SelectedType, "desc", "subdesc", (float)point90.getLongitude(), (float)point90.getLatitude(), "mipmap/ic_launcher"));
+                MainActivity.locations.add(new CustomLocation("Random", SelectedType, "desc", "subdesc", (float)point180.getLongitude(), (float)point180.getLatitude(), "mipmap/ic_launcher"));
+                MainActivity.locations.add(new CustomLocation("Random", SelectedType, "desc", "subdesc", (float)point270.getLongitude(), (float)point270.getLatitude(), "mipmap/ic_launcher"));
+            }
+        }
+
         for (CustomLocation location : MainActivity.locations) {
             double distance = currentPoint.distanceTo(location.getGeoPoint());
 
