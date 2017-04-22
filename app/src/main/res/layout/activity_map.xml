@@ -31,11 +31,24 @@
         app:layout_constraintTop_toBottomOf="@+id/speed"/>
 
     <Button
+        android:id="@+id/zoomIn"
+        android:text="+"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginBottom="50dp"
-        android:onClick="newLocation"
-        app:layout_constraintLeft_toLeftOf="parent"
+        android:onClick="zoomInButtonClick"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintBottom_toBottomOf="@+id/zoomOut"
+        tools:layout_editor_absoluteX="0dp" />
+
+    <Button
+        android:id="@+id/zoomOut"
+        android:text="-"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="50dp"
+        android:onClick="zoomOutButtonClick"
+        app:layout_constraintRight_toRightOf="parent"
         app:layout_constraintBottom_toBottomOf="@+id/map"
         tools:layout_editor_absoluteX="0dp" />
 

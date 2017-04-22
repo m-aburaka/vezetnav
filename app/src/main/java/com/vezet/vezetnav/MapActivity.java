@@ -229,19 +229,13 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
         return false;
     }
 
-    public void newLocation(View view) {
-        Location loc = new Location("Test");
-        if (currentPoint == null) {
-            currentPoint = new GeoPoint(60, 30);
-        }
-        loc.setLatitude(currentPoint.getLatitude());
-        loc.setLongitude(currentPoint.getLongitude() + 0.01);
-        loc.setAltitude(0);
-        loc.setAccuracy(10f);
-        loc.setProvider(LocationManager.GPS_PROVIDER);
-        loc.setTime(System.currentTimeMillis());
-        loc.setSpeed(5);
-        onLocationChanged(loc);
+    public void zoomInButtonClick(View view) {
+        mapController.zoomIn();
+        mTrackingMode = true;
+    }
+
+    public void zoomOutButtonClick(View view) {
+        mapController.zoomOut();
         mTrackingMode = true;
     }
 
