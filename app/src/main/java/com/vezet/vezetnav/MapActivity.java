@@ -44,6 +44,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
     public static final String TRACKING_MODE = "TRACKING_MODE";
     private static final String UPDATE_ROAD = "UPDATE_ROAD";
     public static final String UPDATE_MAP_OVERLAY = "UPDATE_MAP_OVERLAY";
+    private static final String UPDATE_ROAD_START = "UPDATE_ROAD_START";
     private LocationManager mLocationManager;
     private DirectedLocationOverlay myLocationOverlay;
     private IMapController mapController;
@@ -601,10 +602,20 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
             extrapolatedRoad = copyRoad(originalRoad);
             removeOldNodesInOverlay(extrapolatedRoad);
-            extrapolatedRoad.mRouteHigh.set(0, new GeoPoint(extrapolatedLocation));
 
-            //Log.d(UPDATE_ROAD, "extrapolatedRoad nodes " + extrapolatedRoad.mNodes.size());
-            //Log.d(UPDATE_ROAD, "extrapolatedRoad start " + extrapolatedRoad.mNodes.get(0).mLocation);
+            //if user not too far away from start of the road or user pointing at start of the road
+            if (extrapolatedRoad.mRouteHigh.size() > 1) {
+                GeoPoint roadStart = extrapolatedRoad.mRouteHigh.get(0);
+                GeoPoint currPoint = new GeoPoint(extrapolatedLocation);
+                double bearing = currPoint.bearingTo(roadStart);
+                double delta = Math.abs(bearing - extrapolatedLocation.getBearing());
+
+                int distanceTo = roadStart.distanceTo(currPoint);
+                if (distanceTo < 50 || delta < 10) {
+                    extrapolatedRoad.mRouteHigh.set(0, new GeoPoint(extrapolatedLocation));
+                }
+                Log.d(UPDATE_ROAD_START, "difference between road start and current location in meters;degrees " + distanceTo + ";" + String.format("%.2f",delta));
+            }
         }
 
         private void removeOldNodesInOverlay(Road road) {
@@ -626,6 +637,10 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
 
             if (nextPoint == null) return;
             int index = road.mRouteHigh.indexOf(nextPoint);
+
+            //remove one more for good measure
+            if (road.mRouteHigh.size() > index + 1)
+                index++;
 
             //also, find closest point for next node
             //if we removing that point, remove node too
