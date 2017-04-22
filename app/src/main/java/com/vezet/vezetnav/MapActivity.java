@@ -271,9 +271,9 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
             setMarkers();
         }
         //next time, update from background thread
-        else {
+        //else {
             backgroundThread.setLocation(pLoc);
-        }
+        //}
     }
 
     private void update(Location location, Road road) {
@@ -503,7 +503,7 @@ public class MapActivity extends AppCompatActivity implements LocationListener, 
                     return;
 
                 synchronized (this) {
-                    if (extrapolatedLocation == null) {
+                    if (originalLocation == null) {
                         continue;
                     }
 
